@@ -55,6 +55,16 @@
             font-size: 14px;
         }
         textarea { resize: vertical; }
+
+        /* ===== Compact number inputs (1.5× width) ===== */
+        .small-number {
+            width: 90px;              /* increased from 60px */
+            text-align: center;
+            padding: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+
         .buttons {
             margin-top: 10px;
             display: flex;
@@ -116,15 +126,18 @@
 <div class="panel">
     <label>Number of symbolic variables</label>
     <input type="number" id="num_vars" name="num_vars"
-           value="{{ num_vars|default:3 }}" min="1">
+           value="{{ num_vars|default:3 }}" min="1"
+           class="small-number">
 
     <label>Number of forward gains</label>
     <input type="number" id="num_forward" name="num_forward"
-           value="{{ num_forward|default:2 }}" min="0">
+           value="{{ num_forward|default:2 }}" min="0"
+           class="small-number">
 
     <label>Number of backward gains</label>
     <input type="number" id="num_backward" name="num_backward"
-           value="{{ num_backward|default:2 }}" min="0">
+           value="{{ num_backward|default:2 }}" min="0"
+           class="small-number">
 
     <div class="buttons">
         <button type="submit" name="action" value="tf">TF</button>
