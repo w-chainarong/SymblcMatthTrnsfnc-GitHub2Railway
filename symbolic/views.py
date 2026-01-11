@@ -1,4 +1,5 @@
 from django.shortcuts import render
+import textwrap
 
 from .engine.control_engine import (
     SymbolicControlEngine,
@@ -7,6 +8,12 @@ from .engine.control_engine import (
     block_graph_to_mermaid,
 )
 
+# STEP 5: ZPK (Minreal)
+from .engine.zpk_minreal import ZPKMinrealEngine
+
+from .engine.time_response import TimeResponseEngine
+from sympy import latex
+from sympy import pretty
 
 # ==================================================
 # Default symbolic system (DEMO / BASELINE)
@@ -23,27 +30,30 @@ def runtime_gui(request):
     Runtime symbolic control-system GUI
 
     Supported actions:
-    - tf      : compute symbolic transfer function
-    - block   : generate structural block diagram
+    - tf        : structural symbolic transfer function (NO gain substitution)
+    - laplace   : Laplace-domain transfer function (WITH gain substitution)
+    - block     : generate structural block diagram
     """
 
     # --------------------------------------------------
     # Default context (สำคัญ: ป้องกันค่าหาย)
     # --------------------------------------------------
     context = {
-        # ===== must be consistent with DEFAULT_EQUATIONS =====
         "num_vars": 3,
         "num_forward": 2,
         "num_backward": 2,
+        "tf_mode": "raw",
 
         "equations": DEFAULT_EQUATIONS,
-        "forward_gain": "",
-        "backward_gain": "",
+        "forward_gain": textwrap.dedent("""\
+            (2*s + 1)/(s + 2)
+            1/(s*(s**2 + 2*s + 2))
+        """),
 
-        "response_type": "nilt",
-        "dt": "0.01",
-        "points": 500,
-
+        "backward_gain": textwrap.dedent("""\
+            2*s
+            (s - 1)/(s + 1)
+        """),
         "variables": "",
         "result": None,
         "error": None,
@@ -54,6 +64,7 @@ def runtime_gui(request):
 
         # Block diagram (Mermaid)
         "mermaid": None,
+        "warning": None,
     }
 
     # --------------------------------------------------
@@ -77,15 +88,20 @@ def runtime_gui(request):
             context["forward_gain"] = request.POST.get("forward_gain", "")
             context["backward_gain"] = request.POST.get("backward_gain", "")
 
-            context["response_type"] = request.POST.get(
-                "response_type", "nilt"
-            )
-            context["dt"] = request.POST.get("dt", context["dt"])
-            context["points"] = request.POST.get(
-                "points", context["points"]
-            )
-
             action = request.POST.get("action", "tf")
+            tf_mode = request.POST.get("tf_mode", "raw")
+
+            # ----------------------------------------------
+            # Normalize tf_mode (สำคัญมาก)
+            # ----------------------------------------------
+            if tf_mode == "zpk":
+                tf_mode = "zpk_minreal"
+
+            ALLOWED_TF_MODES = {"raw", "factorized", "zpk_minreal"}
+            if tf_mode not in ALLOWED_TF_MODES:
+                tf_mode = "raw"
+
+            context["tf_mode"] = tf_mode
 
             # ----------------------------------------------
             # Read multi-line equations (implicit form)
@@ -111,7 +127,7 @@ def runtime_gui(request):
             )
 
             # ----------------------------------------------
-            # Initialize symbolic engine (ใช้ร่วมทุก action)
+            # Initialize symbolic engine (STEP 1–4)
             # ----------------------------------------------
             engine = SymbolicControlEngine()
 
@@ -121,37 +137,108 @@ def runtime_gui(request):
 
             engine.load_equations(equation_list)
 
-            # parse gain values (comma-separated)
+            # ----------------------------------------------
+            # Parse multiline gain expressions
+            # ----------------------------------------------
             g_vals = [
-                g.strip()
-                for g in context["forward_gain"].split(",")
-                if g.strip()
-            ]
-            h_vals = [
-                h.strip()
-                for h in context["backward_gain"].split(",")
-                if h.strip()
+                line.strip()
+                for line in context["forward_gain"].splitlines()
+                if line.strip()
             ]
 
-            engine.load_forward_gain_values(g_vals)
-            engine.load_backward_gain_values(h_vals)
+            h_vals = [
+                line.strip()
+                for line in context["backward_gain"].splitlines()
+                if line.strip()
+            ]
 
             # ==================================================
-            # ACTION: Transfer Function
+            # ACTION: TF
             # ==================================================
             if action == "tf":
+                engine.compute_symbolic_transfer_function()
+                context["latex_equations"] = engine.get_latex_equations()
+            # ----------------------------------------------
+            # STEP 5: ZPK (Minreal) — TEMPORARILY DISABLED
+            # ----------------------------------------------
+            # if tf_mode == "zpk_minreal":
+            #     tf_expr = engine.get_transfer_function_expr()
+            #     s = engine.s
+            #
+            #     zpk_engine = ZPKMinrealEngine(tf_expr, s)
+            #     zpk_engine.compute_zpk()
+            #     zpk_engine.minreal()
+            #
+            #     context["latex_tf"] = zpk_engine.to_latex()
+            #     context["result"] = (
+            #         "ZPK (Minreal) overall transfer function\n"
+            #         "--------------------------------------\n"
+            #         + zpk_engine.to_matlab_like()
+            #     )
+            #
+            #     return render(
+            #         request,
+            #         "symbolic/runtime_gui.html",
+            #         context
+            #     )
+
+                # ----------------------------------------------
+                # STEP 4: Symbolic modes ONLY
+                # ----------------------------------------------
+                context["latex_tf"] = engine.format_transfer_function(tf_mode)
+                context["result"] = (
+                    "Structural (symbolic) overall transfer function\n"
+                    "------------------------------------------------\n"
+                    "Gain expressions G(s), H(s) are NOT substituted.\n"
+                )
+
+            # ==================================================
+            # ACTION: Laplace (ℒ)
+            # ==================================================
+            elif action == "laplace":
+                engine.load_forward_gain_expressions(g_vals)
+                engine.load_backward_gain_expressions(h_vals)
+
                 engine.compute_symbolic_transfer_function()
                 engine.substitute_gains()
 
                 context["latex_equations"] = engine.get_latex_equations()
-                context["latex_tf"] = engine.get_latex_transfer_function()
+                # ----------------------------------------------
+                # STEP 5: ZPK (Minreal) — TERMINAL MODE
+                # ----------------------------------------------
+                if tf_mode == "zpk_minreal":
+                    tf_expr = engine.get_transfer_function_expr()
+                    s = engine.s
 
+                    zpk_engine = ZPKMinrealEngine(tf_expr, s)
+                    zpk_engine.compute_zpk()
+                    zpk_engine.minreal()
+
+                    context["latex_tf"] = zpk_engine.to_latex()
+                    context["result"] = (
+                        "ZPK (Minreal) Laplace-domain transfer function\n"
+                        "---------------------------------------------\n"
+                        + zpk_engine.to_matlab_like()
+                    )
+
+                    # 🔴 สำคัญที่สุด: ตัด flow ตรงนี้
+                    return render(
+                        request,
+                        "symbolic/runtime_gui.html",
+                        context
+                    )
+
+                # ----------------------------------------------
+                # STEP 4: Symbolic Laplace modes
+                # ----------------------------------------------
+                context["latex_tf"] = engine.format_transfer_function(tf_mode)
                 context["result"] = (
-                    "Overall transfer function computed successfully\n"
-                    "-----------------------------------------------\n"
-                    f"Number of variables      : {context['num_vars']}\n"
-                    f"Number of forward gains  : {context['num_forward']}\n"
-                    f"Number of backward gains : {context['num_backward']}\n"
+                    "Laplace-domain overall transfer function\n"
+                    "----------------------------------------\n"
+                    "Gain expressions G(s), H(s) substituted.\n\n"
+                    "Algebraic representation of the system operator\n"
+                    "(non-minimal symbolic form prior to pole–zero cancellation):\n\n"
+                    f"{pretty(engine.algebraic_s_domain_tf)}"
                 )
 
             # ==================================================
@@ -162,13 +249,94 @@ def runtime_gui(request):
                 graph = bd_engine.build_block_graph()
 
                 context["mermaid"] = block_graph_to_mermaid(graph)
-
                 context["result"] = (
                     "Block diagram generated successfully\n"
                     "-----------------------------------\n"
                     f"Number of nodes : {len(graph['nodes'])}\n"
                     f"Number of edges : {len(graph['edges'])}\n"
                 )
+            # ==================================================
+            # ACTION: Inverse Laplace (ℒ⁻¹)
+            # ==================================================
+            elif action == "inv_laplace":
+                response_type = request.POST.get("response_type", "impulse")
+                solution_type = request.POST.get("solution_type", "symbolic")
+
+                if solution_type != "symbolic":
+                    raise SymbolicEngineError(
+                        "Only symbolic inverse Laplace is supported.",
+                        stage="TF7"
+                    )
+
+                # 1) Load gains
+                engine.load_forward_gain_expressions(g_vals)
+                engine.load_backward_gain_expressions(h_vals)
+
+                # 2) Compute Laplace-domain transfer function
+                engine.compute_symbolic_transfer_function()
+                engine.substitute_gains()
+
+                # 3) Select G(s) according to tf_mode
+                if tf_mode == "raw":
+                    Gs = engine.get_transfer_function_expr()
+
+                elif tf_mode == "factorized":
+                    Gs = engine.get_transfer_function_expr().factor()
+
+                elif tf_mode == "zpk_minreal":
+                    tf_expr = engine.get_transfer_function_expr()
+                    s = engine.s
+
+                    zpk_engine = ZPKMinrealEngine(tf_expr, s)
+                    zpk_engine.compute_zpk()
+                    zpk_engine.minreal()
+
+                    Gs = zpk_engine.get_minreal_expr()
+
+                else:
+                    raise SymbolicEngineError(
+                        "Unsupported TF mode for inverse Laplace",
+                        stage="TF7"
+                    )
+                context["latex_tf_used"] = latex(Gs)
+                # 4) WARNING: improper transfer function (SAFE POSITION)
+                context["warning"] = None
+                s = engine.s
+
+                try:
+                    num, den = Gs.as_numer_denom()
+                    deg_num = num.as_poly(s).degree()
+                    deg_den = den.as_poly(s).degree()
+
+                    if deg_num > deg_den:
+                        context["warning"] = (
+                            "⚠️ Warning: Improper transfer function detected.\n"
+                            f"deg(numerator) = {deg_num} > deg(denominator) = {deg_den}\n"
+                            "Only the regular (proper) time-domain response will be shown.\n"
+                            "Distribution terms (e.g. DiracDelta) are omitted."
+                        )
+                except Exception:
+                    # Degree detection failed → do not block computation
+                    pass
+                # --------------------------------------------------
+                # STEP 4: Time-domain response via TF7
+                # --------------------------------------------------
+                tr_engine = TimeResponseEngine(
+                    s=engine.s   # สำคัญ: ใช้ symbol เดียวกับ ControlEngine
+                )
+
+                yt = tr_engine.compute(
+                    Gs=Gs,
+                    response_type=response_type   # "impulse" หรือ "step"
+                )
+
+                context["latex_time_response"] = latex(yt)
+
+                context["result"] = (
+                    f"Response type : {response_type}\n"
+                    "Solution type : symbolic\n"
+                )
+
 
         # ==================================================
         # Controlled symbolic error

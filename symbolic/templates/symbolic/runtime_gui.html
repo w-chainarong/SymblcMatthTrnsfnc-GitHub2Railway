@@ -25,6 +25,7 @@
             font-family: Segoe UI, Arial, sans-serif;
             background: #d9d9d9;
         }
+
         .container {
             width: 900px;
             margin: 20px auto;
@@ -32,37 +33,39 @@
             padding: 15px;
             border: 1px solid #aaa;
         }
+
         h2 { margin-top: 0; }
+
         .grid {
             display: grid;
             grid-template-columns: 300px 1fr;
             gap: 15px;
         }
+
         .panel {
             background: #f5f5f5;
             padding: 10px;
             border: 1px solid #bbb;
         }
+
         label {
             display: block;
-            margin-top: 8px;
+            margin-top: 10px;
             font-weight: 600;
         }
-        input, select, textarea {
+
+        input, textarea {
             width: 100%;
             margin-top: 4px;
-            padding: 4px;
-            font-size: 14px;
-        }
-        textarea { resize: vertical; }
-
-        /* ===== Compact number inputs (1.5× width) ===== */
-        .small-number {
-            width: 90px;              /* increased from 60px */
-            text-align: center;
-            padding: 4px;
             font-size: 14px;
             box-sizing: border-box;
+        }
+
+        textarea { resize: vertical; }
+
+        .small-number {
+            width: 90px;
+            text-align: center;
         }
 
         .buttons {
@@ -71,44 +74,52 @@
             gap: 10px;
             flex-wrap: wrap;
         }
+
         button {
             padding: 6px 14px;
             font-size: 14px;
             cursor: pointer;
         }
+
         .output {
-            background: white;
+            background: #ffffff;
             height: 120px;
+            padding: 6px;
+            border: 1px solid #bbb;
+            font-family: Consolas, "Courier New", monospace;
+            white-space: pre;
         }
-        .equations {
-            background: #fff;
-            height: 90px;
-            font-family: Consolas, monospace;
+
+        /* ===== unified symbolic editor ===== */
+        .equations,
+        .gains {
+            background: #ffffff;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 14px;
+            line-height: 1.4;
+            padding: 6px;
+            border: 1px solid #bbb;
+            white-space: pre;
         }
-        .bottom {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 15px;
-        }
+
+        .equations { height: 90px; }
+
         pre {
             background: #fff;
             padding: 10px;
             border: 1px solid #bbb;
             white-space: pre-wrap;
         }
-        .latex-box {
-            background: #ffffff;
-            padding: 10px;
-            border: 1px solid #bbb;
-            margin-top: 10px;
-        }
+
+        .latex-box,
         .diagram-box {
             background: #ffffff;
             padding: 10px;
             border: 1px solid #bbb;
             margin-top: 10px;
-            overflow-x: auto;
+
+            overflow-x: auto;        /* 👈 เลื่อนซ้าย-ขวา */
+            white-space: nowrap;     /* 👈 ไม่ตัดบรรทัด */
         }
     </style>
 </head>
@@ -136,53 +147,121 @@
 
     <label>Number of backward gains</label>
     <input type="number" id="num_backward" name="num_backward"
-           value="{{ num_backward|default:2 }}" min="0"
+           value="{{ num_backward|default_if_none:2 }}" min="0"
            class="small-number">
 
     <div class="buttons">
-        <button type="submit" name="action" value="tf">TF</button>
-        <button type="submit" name="action" value="block">Block Diagram</button>
+        <button type="submit"
+            name="action"
+            value="tf"
+            onclick="return checkConsistencyBeforeTF();">TF
+        </button>
+        <button type="submit"
+            name="action"
+            value="block"
+            onclick="return checkConsistencyBeforeTF();">Block Diagram
+        </button>
         <button type="submit" name="action" value="laplace">ℒ</button>
         <button type="submit" name="action" value="inv_laplace">ℒ⁻¹</button>
     </div>
+    <label style="margin-top:12px; display:block;">
+        Transfer Function Display
+    </label>
+
+    <select name="tf_mode">
+        <option value="raw"
+            {% if tf_mode == "raw" %}selected{% endif %}>
+            Raw (Symbolic)
+        </option>
+
+        <option value="factorized"
+            {% if tf_mode == "factorized" %}selected{% endif %}>
+            Symbolic Factorized
+        </option>
+
+        <option value="zpk_minreal"
+            {% if tf_mode == "zpk_minreal" %}selected{% endif %}>
+            ZPK (Minreal)
+        </option>
+    </select>
+    <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #bbb;">
+        <label>Response Type</label>
+        <select name="response_type">
+            <option value="impulse">Impulse Response</option>
+            <option value="step">Step Response</option>
+        </select>
+
+        <label style="margin-top:6px;">Solution Type</label>
+        <select name="solution_type">
+            <option value="symbolic">Symbolic Solution</option>
+            <option value="numeric">Numerical Solution</option>
+        </select>
+    </div>
+
 </div>
 
 <!-- RIGHT PANEL -->
 <div class="panel">
     <label>Generated symbols</label>
-    <textarea id="symbols_out"
-              class="output"
-              readonly></textarea>
+    <textarea id="symbols_out" class="output" readonly></textarea>
 
     <label>
         System of symbolic equations
-        <span style="font-weight:normal;">(one expression per line, implicit = 0)</span>
+        <span style="font-weight:normal;">
+            (one expression per line, implicit = 0)
+        </span>
     </label>
-    <textarea name="equations"
-              class="equations"
-    >{{ equations|default:'' }}</textarea>
+    <textarea name="equations" class="equations">{{ equations|default:'' }}</textarea>
 
-    <label>Forward gain G(s)</label>
-    <input type="text" name="forward_gain"
-           value="{{ forward_gain|default:'' }}">
+    <label>
+        Forward gains G(s)
+        <span style="font-weight:normal;">
+            (one expression per line: G1, G2, …)
+        </span>
+    </label>
+    <textarea name="forward_gain" class="gains" rows="{{ num_forward|default:2 }}">{{ forward_gain|default:'' }}</textarea>
 
-    <label>Backward gain H(s)</label>
-    <input type="text" name="backward_gain"
-           value="{{ backward_gain|default:'' }}">
+    <label>
+        Backward gains H(s)
+        <span style="font-weight:normal;">
+            (one expression per line: H1, H2, …)
+        </span>
+    </label>
+    <textarea name="backward_gain" class="gains" rows="{{ num_backward|default_if_none:2 }}">{{ backward_gain|default:'' }}</textarea>
 </div>
 
 </div>
 
 <div class="buttons" style="margin-top:15px;">
-<button type="submit">Compute</button>
+    <button type="submit">Compute</button>
 </div>
 
 </form>
 
-<!-- ================= TEXT RESULT ================= -->
 {% if result %}
 <h3>Result</h3>
-<pre>{{ result }}</pre>
+<pre>
+{{ result }}
+</pre>
+{% endif %}
+
+{% if latex_tf_used %}
+<h3>Transfer Function Used for ℒ⁻¹</h3>
+<div class="latex-box">
+    $$ {{ latex_tf_used }} $$
+</div>
+{% endif %}
+
+{% if warning %}
+<h3 style="color:#d97706;">Warning</h3>
+<pre style="
+    color:#d97706;
+    border:1px solid #f59e0b;
+    background:#fff7ed;
+    padding:10px;
+">
+{{ warning }}
+</pre>
 {% endif %}
 
 {% if error %}
@@ -190,7 +269,6 @@
 <pre>{{ error }}</pre>
 {% endif %}
 
-<!-- ================= LaTeX OUTPUT ================= -->
 {% if latex_equations %}
 <h3>System of Equations</h3>
 <div class="latex-box">
@@ -207,7 +285,7 @@ $$ {{ latex_tf }} $$
 </div>
 {% endif %}
 
-<!-- ================= BLOCK DIAGRAM OUTPUT ================= -->
+
 {% if mermaid %}
 <h3>Block Diagram (Structural)</h3>
 <div class="diagram-box">
@@ -217,9 +295,31 @@ $$ {{ latex_tf }} $$
 </div>
 {% endif %}
 
+
+{% if debug_tf_latex %}
+<h3>DEBUG: G(s) used for ℒ⁻¹</h3>
+<div class="latex-box">
+    $$ {{ debug_tf_latex }} $$
+</div>
+{% endif %}
+
+<!-- ===== Time Response (Inverse Laplace) : UI Placeholder ===== -->
+<h3>Time Response (Inverse Laplace)</h3>
+<div class="latex-box">
+    {% if latex_time_response %}
+        $$ {{ latex_time_response }} $$
+    {% else %}
+        <span style="color:#666;">
+            No time-domain response computed yet.<br>
+            Press ℒ⁻¹ to compute impulse or step response
+            (symbolic or numerical).
+        </span>
+    {% endif %}
+</div>
+<!-- ===== END Time Response ===== -->
+
 </div>
 
-<!-- ================= JavaScript ================= -->
 <script>
 function gen(prefix, n) {
     if (isNaN(n) || n < 1) return "";
@@ -244,6 +344,60 @@ function updateAll() {
 
     document.getElementById("symbols_out").value = text.trim();
 }
+
+function countNonEmptyLines(text) {
+    return text
+        .split("\n")
+        .map(l => l.trim())
+        .filter(l => l !== "")
+        .length;
+}
+
+function checkConsistencyBeforeTF() {
+    const action =
+        document.activeElement?.value || "";
+
+    const nv = parseInt(document.getElementById("num_vars").value) || 0;
+    const nf = parseInt(document.getElementById("num_forward").value) || 0;
+    const nb = parseInt(document.getElementById("num_backward").value) || 0;
+
+    const eqText = document.querySelector("textarea[name='equations']")?.value || "";
+    const fgText = document.querySelector("textarea[name='forward_gain']")?.value || "";
+    const bgText = document.querySelector("textarea[name='backward_gain']")?.value || "";
+
+    const ne  = countNonEmptyLines(eqText);
+    const nfg = countNonEmptyLines(fgText);
+    const nbg = countNonEmptyLines(bgText);
+
+    let errors = [];
+
+    // 🔹 equations ต้องตรงเสมอ (ทุกโหมด)
+    if (ne !== nv) {
+        errors.push(`Symbolic variables (nv) = ${nv}, but equations = ${ne}`);
+    }
+
+    // 🔹 gains ตรวจเฉพาะโหมดที่ใช้ gain จริง
+    if (action !== "tf" && action !== "block") {
+        if (nfg !== nf) {
+            errors.push(`Forward gains (nf) = ${nf}, but forward gain lines = ${nfg}`);
+        }
+        if (nbg !== nb) {
+            errors.push(`Backward gains (nb) = ${nb}, but backward gain lines = ${nbg}`);
+        }
+    }
+
+    if (errors.length > 0) {
+        alert(
+            "Consistency check failed:\n\n" +
+            errors.join("\n") +
+            "\n\nPlease fix the input before computing."
+        );
+        return false;
+    }
+    return true;
+}
+
+
 
 ["num_vars", "num_forward", "num_backward"].forEach(id => {
     const el = document.getElementById(id);

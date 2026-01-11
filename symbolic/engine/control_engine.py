@@ -1,13 +1,10 @@
-from sympy import symbols, Eq, solve, simplify, latex
+from sympy import symbols, Eq, solve, simplify, latex, Symbol
 from sympy.parsing.sympy_parser import parse_expr
 from sympy.core.sympify import SympifyError
-
-from sympy import simplify
-from sympy.core.relational import Equality
+from sympy import expand
+from sympy import cancel, factor, fraction, LC
 
 import re
-from sympy import expand, simplify, Symbol
-
 
 
 # ==================================================
@@ -53,18 +50,19 @@ class SymbolicControlEngine:
         self.num_backward = 0
 
         # symbols
-        self.x = []     # sympy symbols x1, x2, ...
-        self.X = []     # string names ["x1", "x2", ...]
+        self.x = []     # x1, x2, ...
+        self.X = []
 
         self.g = []     # G1, G2, ...
         self.h = []     # H1, H2, ...
 
         self.R = symbols('R')
+        self.s = Symbol('s')
 
         # expressions
         self.equations = []
-        self.forward_gain_values = []
-        self.backward_gain_values = []
+        self.forward_gain_values = {}     # {Gi: expr}
+        self.backward_gain_values = {}    # {Hi: expr}
 
         # results
         self.symbolic_tf = None
@@ -80,7 +78,6 @@ class SymbolicControlEngine:
                 "Number of variables must be positive",
                 stage="init_variables"
             )
-
         self.num_vars = num_vars
         self.x = symbols(f'x1:{num_vars + 1}')
         self.X = [f"x{i+1}" for i in range(num_vars)]
@@ -108,15 +105,9 @@ class SymbolicControlEngine:
     # --------------------------------------------------
 
     def _allowed_symbols(self) -> set:
-        """
-        Whitelist of allowed symbols for semantic validation
-        """
-        return set(self.x) | set(self.g) | set(self.h) | {self.R}
+        return set(self.x) | set(self.g) | set(self.h) | {self.R, self.s}
 
     def _validate_symbols(self, expr, stage: str):
-        """
-        Reject expressions containing symbols outside whitelist
-        """
         illegal = expr.free_symbols - self._allowed_symbols()
         if illegal:
             names = ", ".join(sorted(str(s) for s in illegal))
@@ -125,17 +116,25 @@ class SymbolicControlEngine:
                 stage=stage
             )
 
+    def _validate_gain_symbols(self, expr, stage: str):
+        """
+        Gain expressions must be Laplace-domain only:
+        allowed symbol: s
+        """
+        illegal = expr.free_symbols - {self.s}
+        if illegal:
+            names = ", ".join(sorted(str(s) for s in illegal))
+            raise SymbolicEngineError(
+                f"Illegal symbol(s) in gain expression: {names}",
+                stage=stage
+            )
+
+
     # --------------------------------------------------
     # Input loading (LINE-AWARE)
     # --------------------------------------------------
 
     def load_equations(self, equations: list[str]):
-        """
-        Load implicit equations of the form:
-            expr = 0
-
-        Each list item = one equation line
-        """
         self.equations = []
 
         if len(equations) != self.num_vars:
@@ -149,38 +148,55 @@ class SymbolicControlEngine:
                 expr = parse_expr(eq_str)
                 self._validate_symbols(expr, stage="parse_equations")
                 self.equations.append(Eq(expr, 0))
-
             except (SyntaxError, SympifyError, TypeError) as e:
                 raise SymbolicEngineError(
                     f"Syntax error in equation line {idx}: {e}",
                     stage="parse_equations"
                 )
 
-    def load_forward_gain_values(self, gains: list[str]):
-        self.forward_gain_values = []
+    # --------------------------------------------------
+    # Gain loading (IDENTICAL PATTERN)
+    # --------------------------------------------------
 
-        for idx, g in enumerate(gains, start=1):
+    def load_forward_gain_expressions(self, gains: list[str]):
+        self.forward_gain_values = {}
+
+        if len(gains) != self.num_forward:
+            raise SymbolicEngineError(
+                "Number of forward gain expressions must equal number of forward gains",
+                stage="load_forward_gains"
+            )
+
+        for idx, gain_str in enumerate(gains, start=1):
+            Gi = self.g[idx - 1]
             try:
-                expr = parse_expr(g)
-                self._validate_symbols(expr, stage="parse_forward_gain")
-                self.forward_gain_values.append(expr)
+                expr = parse_expr(gain_str)
+                self._validate_gain_symbols(expr, stage="parse_forward_gain")
+                self.forward_gain_values[Gi] = expr
             except (SyntaxError, SympifyError, TypeError) as e:
                 raise SymbolicEngineError(
-                    f"Invalid forward gain at position {idx}: {e}",
+                    f"Syntax error in forward gain line {idx}: {e}",
                     stage="parse_forward_gain"
                 )
 
-    def load_backward_gain_values(self, gains: list[str]):
-        self.backward_gain_values = []
+    def load_backward_gain_expressions(self, gains: list[str]):
+        self.backward_gain_values = {}
 
-        for idx, h in enumerate(gains, start=1):
+        if len(gains) != self.num_backward:
+            raise SymbolicEngineError(
+                "Number of backward gain expressions must equal number of backward gains",
+                stage="load_backward_gains"
+            )
+
+        for idx, gain_str in enumerate(gains, start=1):
+            Hi = self.h[idx - 1]
             try:
-                expr = parse_expr(h)
-                self._validate_symbols(expr, stage="parse_backward_gain")
-                self.backward_gain_values.append(expr)
+                expr = parse_expr(gain_str)
+                self._validate_gain_symbols(expr, stage="parse_backward_gain")
+                self.backward_gain_values[Hi] = expr
             except (SyntaxError, SympifyError, TypeError) as e:
                 raise SymbolicEngineError(
-                    f"Invalid backward gain at position {idx}: {e}",
+                    f"Syntax error in backward gain line {idx}: {e}",
                     stage="parse_backward_gain"
                 )
 
@@ -189,10 +205,6 @@ class SymbolicControlEngine:
     # --------------------------------------------------
 
     def compute_symbolic_transfer_function(self):
-        """
-        Solve symbolic system and compute:
-            TF(s) = Y(s) / R(s)
-        """
         try:
             solution = solve(self.equations, self.x)
         except Exception as e:
@@ -209,6 +221,7 @@ class SymbolicControlEngine:
 
         try:
             Y = solution[self.x[-1]]
+            self.algebraic_tf = Y / self.R
             self.symbolic_tf = simplify(Y / self.R)
         except Exception as e:
             raise SymbolicEngineError(
@@ -219,24 +232,25 @@ class SymbolicControlEngine:
         return self.symbolic_tf
 
     def substitute_gains(self):
-        """
-        Substitute G_i(s), H_j(s) into symbolic TF
-        """
         if self.symbolic_tf is None:
             raise SymbolicEngineError(
                 "Transfer function not computed yet",
                 stage="substitute_gains"
             )
 
+        # --- NEW: algebraic s-domain (no simplify) ---
+        self.algebraic_s_domain_tf = self.algebraic_tf
+        for Gi, val in self.forward_gain_values.items():
+            self.algebraic_s_domain_tf = self.algebraic_s_domain_tf.subs(Gi, val)
+        for Hi, val in self.backward_gain_values.items():
+            self.algebraic_s_domain_tf = self.algebraic_s_domain_tf.subs(Hi, val)
+
         tf = self.symbolic_tf
-
         try:
-            for Gi, val in zip(self.g, self.forward_gain_values):
+            for Gi, val in self.forward_gain_values.items():
                 tf = tf.subs(Gi, val)
-
-            for Hi, val in zip(self.h, self.backward_gain_values):
+            for Hi, val in self.backward_gain_values.items():
                 tf = tf.subs(Hi, val)
-
             self.s_domain_tf = simplify(tf)
         except Exception as e:
             raise SymbolicEngineError(
@@ -250,6 +264,7 @@ class SymbolicControlEngine:
     # Output formatting
     # --------------------------------------------------
 
+  
     def get_latex_transfer_function(self) -> str | None:
         try:
             if self.s_domain_tf is not None:
@@ -271,6 +286,76 @@ class SymbolicControlEngine:
                 f"Failed to convert equations to LaTeX: {e}",
                 stage="latex_equations"
             )
+
+    def format_transfer_function(self, mode: str = "raw") -> str | None:
+        """
+        mode:
+            raw     → exact symbolic (Version A)
+            matlab  → cancel + normalize + factor (MATLAB-like)
+        """
+
+        # เลือก TF
+        tf = self.s_domain_tf if self.s_domain_tf is not None else self.symbolic_tf
+        if tf is None:
+            return None
+
+        # ---------- RAW ----------
+        if mode == "raw":
+            return latex(tf)
+
+        # ---------- MATLAB-like ----------
+        tf = cancel(tf)
+
+        num, den = fraction(tf)
+        lc = LC(den)
+        if lc != 0:
+            num = num / lc
+            den = den / lc
+
+        num = factor(num)
+        den = factor(den)
+
+        return latex(num / den)
+
+    # --------------------------------------------------
+    # Public accessor (for STEP 5: ZPK Minreal)
+    # --------------------------------------------------
+    def get_transfer_function_expr(self):
+        """
+        Return the final transfer function as a SymPy expression.
+
+        Priority:
+        1) s-domain TF (after gain substitution)
+        2) symbolic TF (structural)
+        """
+        if self.s_domain_tf is not None:
+            return self.s_domain_tf
+
+        if self.symbolic_tf is not None:
+            return self.symbolic_tf
+
+        raise SymbolicEngineError(
+            "Transfer function not available",
+            stage="get_transfer_function_expr"
+        )
+
+    def get_latex_algebraic_transfer_function(self) -> str | None:
+        try:
+            if hasattr(self, "algebraic_s_domain_tf"):
+                return latex(self.algebraic_s_domain_tf)
+            if hasattr(self, "algebraic_tf"):
+                return latex(self.algebraic_tf)
+        except Exception as e:
+            raise SymbolicEngineError(
+                f"Failed to generate algebraic TF LaTeX: {e}",
+                stage="latex_algebraic_tf"
+            )
+        return None
+
+# --------------------------------------------------
+# BlockDiagramEngine (UNCHANGED)
+# --------------------------------------------------
+# ↓↓↓  ส่วนนี้คงเดิมตามไฟล์ต้นฉบับของคุณ  ↓↓↓
 
 
 
