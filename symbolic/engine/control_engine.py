@@ -5,11 +5,10 @@ from sympy import expand
 from sympy import cancel, factor, fraction, LC
 
 import re
-from sympy import together, fraction
-import threading
+
 
 # ==================================================
-# Custom Engine Errors
+# Custom Engine Error
 # ==================================================
 
 class SymbolicEngineError(Exception):
@@ -26,47 +25,6 @@ class SymbolicEngineError(Exception):
             return f"[{self.stage}] {super().__str__()}"
         return super().__str__()
 
-
-class ComputationTimeoutError(SymbolicEngineError):
-    """Raised when a symbolic computation exceeds allowed time."""
-    pass
-
-
-# ==================================================
-# Timeout helper (cross-platform, production-safe)
-# ==================================================
-
-def run_with_timeout(func, timeout: float, stage: str):
-    """
-    Run a function with a time limit (seconds).
-
-    - Works on Windows, Linux
-    - Works on local + Railway
-    - Safe for Django / WSGI
-    """
-    result = {}
-    error = {}
-
-    def target():
-        try:
-            result["value"] = func()
-        except Exception as e:
-            error["exception"] = e
-
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    t.join(timeout)
-
-    if t.is_alive():
-        raise ComputationTimeoutError(
-            f"Computation exceeded {timeout} seconds",
-            stage=stage
-        )
-
-    if "exception" in error:
-        raise error["exception"]
-
-    return result.get("value")
 
 # ==================================================
 # Symbolic Control Engine
@@ -263,7 +221,6 @@ class SymbolicControlEngine:
 
         try:
             Y = solution[self.x[-1]]
-            self.algebraic_tf = Y / self.R
             self.symbolic_tf = simplify(Y / self.R)
         except Exception as e:
             raise SymbolicEngineError(
@@ -279,13 +236,6 @@ class SymbolicControlEngine:
                 "Transfer function not computed yet",
                 stage="substitute_gains"
             )
-
-        # --- NEW: algebraic s-domain (no simplify) ---
-        self.algebraic_s_domain_tf = self.algebraic_tf
-        for Gi, val in self.forward_gain_values.items():
-            self.algebraic_s_domain_tf = self.algebraic_s_domain_tf.subs(Gi, val)
-        for Hi, val in self.backward_gain_values.items():
-            self.algebraic_s_domain_tf = self.algebraic_s_domain_tf.subs(Hi, val)
 
         tf = self.symbolic_tf
         try:
@@ -381,34 +331,6 @@ class SymbolicControlEngine:
             stage="get_transfer_function_expr"
         )
 
-    def get_latex_algebraic_transfer_function(self) -> str | None:
-        """
-        Return algebraic (non-minimal) transfer function
-        as a single rational operator in LaTeX.
-
-        - No cancellation
-        - No minreal
-        - No simplify
-        """
-        try:
-            if hasattr(self, "algebraic_s_domain_tf"):
-                expr = self.algebraic_s_domain_tf
-            elif hasattr(self, "algebraic_tf"):
-                expr = self.algebraic_tf
-            else:
-                return None
-
-            # รวมเป็นเศษส่วนเดียว แต่ไม่ cancel
-            num, den = fraction(together(expr))
-            return latex(num / den)
-
-        except Exception as e:
-            raise SymbolicEngineError(
-                f"Failed to generate algebraic TF LaTeX: {e}",
-                stage="latex_algebraic_tf"
-            )
-    
-
 # --------------------------------------------------
 # BlockDiagramEngine (UNCHANGED)
 # --------------------------------------------------
@@ -418,13 +340,11 @@ class SymbolicControlEngine:
 
 class BlockDiagramEngine:
     """
-    SMART-TOPOLOGY Block Diagram Engine (v4 - Label Recovery)
-    
-    กฎการออกแบบที่ปรับปรุง:
-    1) Summing block (S_i) สร้างเมื่อ Input > 1
-    2) Take-off point (T_xi) สร้างเฉพาะเมื่อมีการแยกสายสัญญาณจริง (> 1 ทิศทาง)
-    3) ป้ายชื่อ x_i จะปรากฏที่เส้นขาออกจากโหนดต้นกำเนิดเสมอ
-    4) หากวิ่งเข้า Summing block: จะแสดงชื่อ x_i ควบคู่กับเครื่องหมาย (+/-) ขนาดใหญ่
+    TOPOLOGY-STRICT Block Diagram Engine (Refined Version with Large Signs)
+    กฎ:
+    1) สร้าง Summing Block (S_i) เฉพาะเมื่อมี Input > 1 เท่านั้น
+    2) ขาออกของ S_i มีป้าย x_i และไม่มีเครื่องหมาย
+    3) ขาเข้าของ S_i แสดงเฉพาะเครื่องหมาย (+/-) ขนาดใหญ่ (2 เท่า)
     """
 
     def __init__(self, engine):
@@ -435,21 +355,27 @@ class BlockDiagramEngine:
         self.n = len(self.x)
 
     def _sanitize_id(self, text):
-        return re.sub(r"[^a-zA-Z0-9_]", "_", str(text))
+        import re
+        return re.sub(r'[^a-zA-Z0-9_]', '_', str(text))
 
     def build_block_graph(self):
+        from sympy import expand, simplify
         graph = {"nodes": [], "edges": []}
-
-        # 1) Analyze Usage
-        usage = {str(xi): 0 for xi in self.x}; usage["R"] = 0
+        
+        # 1. วิเคราะห์ข้อมูลสมการและ Usage
+        usage = {str(xi): 0 for xi in self.x}
+        usage["R"] = 0
         eq_data = []
+
         for i, eq in enumerate(self.equations, start=1):
             xi_sym = self.x[i - 1]
             expr = expand(eq.lhs)
             coeff = expr.coeff(xi_sym)
             if coeff == 0: continue
+
             rhs = -(expr - coeff * xi_sym) / coeff
             terms = rhs.as_ordered_terms()
+            
             inputs = []
             for t in terms:
                 if t.has(self.R):
@@ -461,89 +387,97 @@ class BlockDiagramEngine:
                             usage[str(xj)] += 1
                             inputs.append((str(xj), simplify(t / xj)))
                             break
-            eq_data.append({"i": i, "xi": str(xi_sym), "inputs": inputs, "needs_sum": len(inputs) > 1})
+            
+            needs_sum = len(inputs) > 1
+            eq_data.append({
+                "i": i, "xi": str(xi_sym), "inputs": inputs, "needs_sum": needs_sum
+            })
 
-        # 2) Base Nodes
-        graph["nodes"].append({"id": "R", "type": "input", "label": "R"})
-        graph["nodes"].append({"id": "Y", "type": "output", "label": "Y"})
+        # 2. Nodes พื้นฐาน
+        graph["nodes"].append({"id": "R", "type": "input", "label": "Input (R)"})
+        graph["nodes"].append({"id": "Y", "type": "output", "label": "Output (Y)"})
 
-        # 3) Junction Planning
-        sum_nodes = {}; takeoff_nodes = {}; xn_str = str(self.x[-1])
+        # 3. Take-off และ Summing Nodes
+        takeoff_nodes = {}
+        x_final_source = {}
+
         for d in eq_data:
             xi = d["xi"]
-            if d["needs_sum"]:
-                sid = f"S{d['i']}"; sum_nodes[xi] = sid
-                graph["nodes"].append({"id": sid, "type": "sum"})
-            if (usage[xi] + (1 if xi == xn_str else 0)) > 1:
-                tid = f"T_{xi}"; takeoff_nodes[xi] = tid
+            if usage[xi] > 1 or xi == str(self.x[-1]):
+                tid = f"T_{xi}"
+                takeoff_nodes[xi] = tid
                 graph["nodes"].append({"id": tid, "type": "takeoff"})
+                x_final_source[xi] = tid
 
-        # 4) Wiring & Sign Labeling
-        created_blocks = set(); final_source = {}
+            if d["needs_sum"]:
+                sid = f"S{d['i']}"
+                graph["nodes"].append({"id": sid, "type": "sum"})
+                if xi in takeoff_nodes:
+                    graph["edges"].append({"from": sid, "to": takeoff_nodes[xi], "label": xi})
+                else:
+                    x_final_source[xi] = sid
+
+        # 4. Blocks และการเชื่อมสาย (เพิ่มการขยายขนาดเครื่องหมาย)
         for d in eq_data:
-            xi = d["xi"]; sum_node = sum_nodes.get(xi)
-            target_junction = sum_node if sum_node else takeoff_nodes.get(xi)
+            xi = d["xi"]
+            needs_sum = d["needs_sum"]
+            target_node = f"S{d['i']}" if needs_sum else (takeoff_nodes.get(xi) or "Y")
+
             for src_name, gain in d["inputs"]:
-                gain_str = str(gain); pure_gain = gain_str.lstrip("-")
+                gain_str = str(gain)
+                if src_name == "R": src_node = "R"
+                else:
+                    src_node = x_final_source.get(src_name)
+                    if not src_node:
+                        src_idx = [str(v) for v in self.x].index(src_name) + 1
+                        src_node = f"S{src_idx}"
+
+                # --- ส่วนที่ปรับขนาดเครื่องหมาย ---
                 raw_sign = "-" if gain_str.startswith("-") else "+"
+                # ใช้ HTML-like label เพื่อขยายขนาดเฉพาะเครื่องหมาย (ประมาณ 2 เท่าจากปกติ 12-14pt)
                 large_sign = f'<<FONT POINT-SIZE="24">{raw_sign}</FONT>>'
                 
-                src_node = "R" if src_name == "R" else (takeoff_nodes.get(src_name) or final_source.get(src_name) or sum_nodes.get(src_name))
-                actual_target = target_junction if target_junction else "Y"
+                pure_gain = gain_str.lstrip("-")
 
-                # กำหนด label: ถ้าเข้า Summing block และเป็นตัวแปร x_i ให้เตรียมที่ว่างไว้เติมชื่อ
-                # แต่ถ้าเป็น R ให้ใส่แค่เครื่องหมาย
-                edge_label = large_sign if actual_target.startswith("S") else None
-                
+                # กฎ: ขาเข้า summing block ใส่เฉพาะเครื่องหมายที่ขยายขนาดแล้ว
+                input_label = large_sign if target_node.startswith("S") else xi
+
                 if pure_gain == "1":
-                    graph["edges"].append({"from": src_node, "to": actual_target, "label": edge_label})
-                    last_node = src_node
+                    graph["edges"].append({
+                        "from": src_node, "to": target_node, "label": input_label
+                    })
                 else:
-                    bid = self._sanitize_id(f"G{d['i']}_{gain_str}_to_{xi}")
-                    if bid not in created_blocks:
-                        graph["nodes"].append({"id": bid, "type": "block", "label_display": pure_gain})
-                        created_blocks.add(bid)
-                    graph["edges"].append({"from": src_node, "to": bid, "label": None})
-                    graph["edges"].append({"from": bid, "to": actual_target, "label": edge_label})
-                    last_node = bid
-                if not sum_node: final_source[xi] = last_node
+                    bid = self._sanitize_id(f"G_{src_name}_to_{xi}")
+                    graph["nodes"].append({
+                        "id": bid, "type": "block", "label_display": pure_gain
+                    })
+                    graph["edges"].append({
+                        "from": src_node, "to": bid, 
+                        "label": src_name if src_node.startswith("S") or src_node == "R" else ""
+                    })
+                    graph["edges"].append({
+                        "from": bid, "to": target_node, "label": input_label
+                    })
 
-            if sum_node:
-                final_source[xi] = sum_node
-                if xi in takeoff_nodes:
-                    graph["edges"].append({"from": sum_node, "to": takeoff_nodes[xi], "label": None})
+                if not needs_sum and xi not in takeoff_nodes:
+                    x_final_source[xi] = bid if pure_gain != "1" else src_node
 
-        # 5) Label Recovery (The Fix)
-        for xi in [str(v) for v in self.x]:
-            target_tid = takeoff_nodes.get(xi)
-            source_node = final_source.get(xi)
-            
-            # ค้นหาเส้นที่ออกจากต้นกำเนิดของ xi เพื่อติดป้ายชื่อ
-            for e in graph["edges"]:
-                if e["from"] == source_node:
-                    current_label = e.get("label")
-                    # ถ้าเส้นนี้วิ่งไปที่ Summing block ให้เอาชื่อ xi ไปแปะหน้าเครื่องหมาย
-                    if e["to"].startswith("S"):
-                        if current_label and "FONT" in current_label:
-                            e["label"] = f"{xi} {current_label}"
-                        else:
-                            e["label"] = xi
-                    # ถ้ายังไม่มี label ให้ใส่ชื่อ xi เข้าไปเลย
-                    elif current_label is None:
+            # บังคับขาออกจาก Sum ให้มีป้าย xi
+            if needs_sum:
+                sid = f"S{d['i']}"
+                for e in graph["edges"]:
+                    if e["from"] == sid and not e.get("label"):
                         e["label"] = xi
-                    
-                    # ถ้าไม่ใช่ Take-off เราจะติดป้ายแค่เส้นเดียวที่ออกจากแหล่งกำเนิด
-                    if not target_tid: break 
-                    # ถ้ามี Take-off เราจะติดป้ายเฉพาะเส้นที่วิ่งไปหาจุด Take-off เท่านั้น
-                    if e["to"] == target_tid: break
 
-        # 6) Final Output Connection
-        if not any(e["to"] == "Y" for e in graph["edges"]):
-            src = takeoff_nodes.get(xn_str) or final_source.get(xn_str)
-            graph["edges"].append({"from": src, "to": "Y", "label": xn_str})
+        # 5. Output (Y)
+        last_xi = str(self.x[-1])
+        if last_xi in x_final_source:
+            if not any(e["to"] == "Y" for e in graph["edges"]):
+                graph["edges"].append({
+                    "from": x_final_source[last_xi], "to": "Y", "label": last_xi
+                })
 
         return graph
-
 
     
 def block_graph_to_mermaid(graph):
@@ -586,77 +520,3 @@ def block_graph_to_mermaid(graph):
     return "\n".join(lines)
 
 
-# ==========================================================
-# FINAL-STRICT Topology Validator
-# (Placed after BlockDiagramEngine)
-# ==========================================================
-
-class TopologyError(Exception):
-    """Raised when block-diagram topology violates control-theory rules."""
-    pass
-
-
-def validate_block_graph(graph):
-    nodes = {n["id"]: n for n in graph["nodes"]}
-    edges = graph["edges"]
-
-    # ------------------------------
-    # helpers
-    # ------------------------------
-    def in_edges(nid):
-        return [e for e in edges if e["to"] == nid]
-
-    def out_edges(nid):
-        return [e for e in edges if e["from"] == nid]
-
-    # ------------------------------
-    # Rule V1: Summing junction
-    # ------------------------------
-    for nid, n in nodes.items():
-        if n.get("type") == "sum":
-            if len(in_edges(nid)) < 2:
-                raise TopologyError(
-                    f"{nid}: summing junction has < 2 inputs"
-                )
-            if len(out_edges(nid)) != 1:
-                raise TopologyError(
-                    f"{nid}: summing junction must have exactly 1 output"
-                )
-
-    # ------------------------------
-    # Rule V2: Take-off point
-    # ------------------------------
-    for nid, n in nodes.items():
-        if n.get("type") == "takeoff":
-            if len(in_edges(nid)) != 1:
-                raise TopologyError(
-                    f"{nid}: take-off must have exactly 1 input"
-                )
-            if len(out_edges(nid)) < 2:
-                raise TopologyError(
-                    f"{nid}: redundant take-off (only 1 output)"
-                )
-
-    # ------------------------------
-    # Rule V3: No self-loop
-    # ------------------------------
-    for e in edges:
-        if e["from"] == e["to"]:
-            raise TopologyError(
-                f"Self-loop detected at node {e['from']}"
-            )
-
-    # ------------------------------
-    # Rule V4: Output integrity
-    # ------------------------------
-    if "Y" in nodes:
-        if len(in_edges("Y")) != 1:
-            raise TopologyError(
-                "Output Y must have exactly 1 input"
-            )
-        if out_edges("Y"):
-            raise TopologyError(
-                "Output Y must not have outgoing edges"
-            )
-
-    return True
