@@ -6,10 +6,10 @@ from sympy import cancel, factor, fraction, LC
 
 import re
 from sympy import together, fraction
-
+import threading
 
 # ==================================================
-# Custom Engine Error
+# Custom Engine Errors
 # ==================================================
 
 class SymbolicEngineError(Exception):
@@ -26,6 +26,47 @@ class SymbolicEngineError(Exception):
             return f"[{self.stage}] {super().__str__()}"
         return super().__str__()
 
+
+class ComputationTimeoutError(SymbolicEngineError):
+    """Raised when a symbolic computation exceeds allowed time."""
+    pass
+
+
+# ==================================================
+# Timeout helper (cross-platform, production-safe)
+# ==================================================
+
+def run_with_timeout(func, timeout: float, stage: str):
+    """
+    Run a function with a time limit (seconds).
+
+    - Works on Windows, Linux
+    - Works on local + Railway
+    - Safe for Django / WSGI
+    """
+    result = {}
+    error = {}
+
+    def target():
+        try:
+            result["value"] = func()
+        except Exception as e:
+            error["exception"] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        raise ComputationTimeoutError(
+            f"Computation exceeded {timeout} seconds",
+            stage=stage
+        )
+
+    if "exception" in error:
+        raise error["exception"]
+
+    return result.get("value")
 
 # ==================================================
 # Symbolic Control Engine
