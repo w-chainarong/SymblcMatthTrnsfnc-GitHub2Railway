@@ -6,6 +6,8 @@ from .engine.control_engine import (
     SymbolicEngineError,
     BlockDiagramEngine,
     block_graph_to_mermaid,
+    validate_block_graph,
+    TopologyError,
 )
 
 # STEP 5: ZPK (Minreal)
@@ -185,7 +187,7 @@ def runtime_gui(request):
                 # ----------------------------------------------
                 # STEP 4: Symbolic modes ONLY
                 # ----------------------------------------------
-                context["latex_tf"] = engine.format_transfer_function(tf_mode)
+                context["latex_tf"] = engine.get_latex_transfer_function()
                 context["result"] = (
                     "Structural (symbolic) overall transfer function\n"
                     "------------------------------------------------\n"
@@ -203,6 +205,7 @@ def runtime_gui(request):
                 engine.substitute_gains()
 
                 context["latex_equations"] = engine.get_latex_equations()
+                context["latex_algebraic_tf"] = engine.get_latex_algebraic_transfer_function()
                 # ----------------------------------------------
                 # STEP 5: ZPK (Minreal) — TERMINAL MODE
                 # ----------------------------------------------
@@ -235,26 +238,43 @@ def runtime_gui(request):
                 context["result"] = (
                     "Laplace-domain overall transfer function\n"
                     "----------------------------------------\n"
-                    "Gain expressions G(s), H(s) substituted.\n\n"
-                    "Algebraic representation of the system operator\n"
-                    "(non-minimal symbolic form prior to pole–zero cancellation):\n\n"
-                    f"{pretty(engine.algebraic_s_domain_tf)}"
+                    "Gain expressions G(s), H(s) substituted.\n"
                 )
-
             # ==================================================
             # ACTION: Block Diagram
             # ==================================================
             elif action == "block":
                 bd_engine = BlockDiagramEngine(engine)
                 graph = bd_engine.build_block_graph()
+                # --- FINAL-STRICT validation (simple) ---
+                try:
+                    validate_block_graph(graph)
+                    topology_status = "FINAL-STRICT VALID"
+                except TopologyError as e:
+                    topology_status = f"INVALID: {e}"
 
                 context["mermaid"] = block_graph_to_mermaid(graph)
-                context["result"] = (
-                    "Block diagram generated successfully\n"
-                    "-----------------------------------\n"
-                    f"Number of nodes : {len(graph['nodes'])}\n"
-                    f"Number of edges : {len(graph['edges'])}\n"
-                )
+                if topology_status == "FINAL-STRICT VALID":
+                    context["result"] = (
+                        "Block diagram generated successfully\n"
+                        "-----------------------------------\n"
+                        f"Number of nodes : {len(graph['nodes'])}\n"
+                        f"Number of edges : {len(graph['edges'])}\n\n"
+                        "Topology status : FINAL-STRICT VALID\n\n"
+                        "Validation checklist:\n"
+                        "  ✔ Summing junctions have ≥ 2 inputs and 1 output\n"
+                        "  ✔ Take-off points have exactly 1 input and ≥ 2 outputs\n"
+                        "  ✔ No self-loop or algebraic loop detected\n"
+                        "  ✔ Output Y has exactly 1 input and no outgoing edges\n"
+                    )
+                else:
+                    context["result"] = (
+                        "Block diagram generated successfully\n"
+                        "-----------------------------------\n"
+                        f"Number of nodes : {len(graph['nodes'])}\n"
+                        f"Number of edges : {len(graph['edges'])}\n\n"
+                        f"Topology status : {topology_status}\n"
+                    )
             # ==================================================
             # ACTION: Inverse Laplace (ℒ⁻¹)
             # ==================================================

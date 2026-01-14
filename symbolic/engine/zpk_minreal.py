@@ -98,15 +98,6 @@ class ZPKMinrealEngine:
     def minreal(self, tol: float = 1e-3):
         """
         Numeric pole-zero cancellation (MATLAB-like)
-
-        Parameters
-        ----------
-        tol : float
-            Cancellation tolerance
-
-        Returns
-        -------
-        zeros, poles, gain
         """
         if not self._zpk_done:
             self.compute_zpk()
@@ -127,6 +118,22 @@ class ZPKMinrealEngine:
         self.zeros = remaining_zeros
         self.poles = remaining_poles
         self._minreal_done = True
+
+        # --------------------------------------------------
+        # reconstruct minreal SymPy expression
+        # --------------------------------------------------
+        s = self.s
+
+        num = self.gain
+        den = 1
+
+        for z in self.zeros:
+            num *= (s - complex(z))
+
+        for p in self.poles:
+            den *= (s - complex(p))
+
+        self.minreal_expr = expand(num / den)
 
         return self.zeros, self.poles, self.gain
 
@@ -242,3 +249,20 @@ class ZPKMinrealEngine:
         den = lines[2]
 
         return r"\frac{" + num + "}{" + den + "}"
+    
+    def get_minreal_expr(self):
+        """
+        Return minreal transfer function as a SymPy expression.
+        Used by inverse Laplace and time-response engine.
+        """
+        if not self._minreal_done:
+            raise AttributeError(
+                "minreal() has not been called yet."
+            )
+
+        if not hasattr(self, "minreal_expr"):
+            raise AttributeError(
+                "minreal_expr not available."
+            )
+
+        return self.minreal_expr
