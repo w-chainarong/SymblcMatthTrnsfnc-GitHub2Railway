@@ -1,1 +1,1 @@
-web: gunicorn runtime_symbolic_control.wsgi
+web: gunicorn --worker-class gthread --threads 4 --timeout 120 --bind 0.0.0.0:$PORT runtime_symbolic_control.wsgi

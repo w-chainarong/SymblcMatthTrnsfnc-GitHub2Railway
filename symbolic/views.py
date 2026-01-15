@@ -6,8 +6,6 @@ from .engine.control_engine import (
     SymbolicEngineError,
     BlockDiagramEngine,
     block_graph_to_mermaid,
-    validate_block_graph,
-    TopologyError,
 )
 
 # STEP 5: ZPK (Minreal)
@@ -246,35 +244,14 @@ def runtime_gui(request):
             elif action == "block":
                 bd_engine = BlockDiagramEngine(engine)
                 graph = bd_engine.build_block_graph()
-                # --- FINAL-STRICT validation (simple) ---
-                try:
-                    validate_block_graph(graph)
-                    topology_status = "FINAL-STRICT VALID"
-                except TopologyError as e:
-                    topology_status = f"INVALID: {e}"
 
                 context["mermaid"] = block_graph_to_mermaid(graph)
-                if topology_status == "FINAL-STRICT VALID":
-                    context["result"] = (
-                        "Block diagram generated successfully\n"
-                        "-----------------------------------\n"
-                        f"Number of nodes : {len(graph['nodes'])}\n"
-                        f"Number of edges : {len(graph['edges'])}\n\n"
-                        "Topology status : FINAL-STRICT VALID\n\n"
-                        "Validation checklist:\n"
-                        "  ✔ Summing junctions have ≥ 2 inputs and 1 output\n"
-                        "  ✔ Take-off points have exactly 1 input and ≥ 2 outputs\n"
-                        "  ✔ No self-loop or algebraic loop detected\n"
-                        "  ✔ Output Y has exactly 1 input and no outgoing edges\n"
-                    )
-                else:
-                    context["result"] = (
-                        "Block diagram generated successfully\n"
-                        "-----------------------------------\n"
-                        f"Number of nodes : {len(graph['nodes'])}\n"
-                        f"Number of edges : {len(graph['edges'])}\n\n"
-                        f"Topology status : {topology_status}\n"
-                    )
+                context["result"] = (
+                    "Block diagram generated successfully\n"
+                    "-----------------------------------\n"
+                    f"Number of nodes : {len(graph['nodes'])}\n"
+                    f"Number of edges : {len(graph['edges'])}\n"
+                )
             # ==================================================
             # ACTION: Inverse Laplace (ℒ⁻¹)
             # ==================================================
