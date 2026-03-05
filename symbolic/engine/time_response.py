@@ -10,10 +10,28 @@
 # - Clear separation from s-domain engines
 # ==================================================
 
+import multiprocessing
+import platform
+import os
 from multiprocessing import Process, Queue
+
+# บังคับใช้ 'spawn' สำหรับระบบ Linux (Railway) 
+# เพื่อป้องกันปัญหา Fork Safety และ Database Connection Error
+if platform.system() != 'Windows':
+    try:
+        # โหมด 'spawn' จะทำงานเสถียรและเหมือนกับบน Windows (PC) มากที่สุด
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # ป้องกัน Error ในกรณีที่ Python มีการตั้งค่าไปแล้วใน Module อื่น
+        pass
+
 from sympy.integrals import inverse_laplace_transform
 from sympy import simplify, symbols
 from .control_engine import SymbolicEngineError
+
+# ==================================================
+# TF7 — Time Response Engine
+# ==================================================
 
 def _inverse_laplace_worker(q, Ys, s, t):
     """
@@ -153,9 +171,11 @@ class TimeResponseEngine:
                 f"Details: {e}",
                 stage="TF7"
         )
+
     def _inverse_laplace_with_timeout(self, Ys, timeout=3.0):
         """
         Perform inverse Laplace transform with timeout (seconds).
+        ปรับปรุงเพื่อรองรับการรันบน Railway/Cloud
         """
 
         q = Queue()
@@ -167,26 +187,35 @@ class TimeResponseEngine:
         p.start()
         p.join(timeout)
 
-        # ---- TIMEOUT ----
+        # ---- 1. จัดการกรณีใช้เวลานานเกินกำหนด (TIMEOUT) ----
         if p.is_alive():
-            p.terminate()
-            p.join()
+            p.terminate()  # สั่งหยุดการทำงานทันที
+            p.join()       # รอให้คืนทรัพยากร (RAM 8GB) กลับสู่ระบบ
             raise SymbolicEngineError(
                 "Inverse Laplace transform timed out.\n"
                 "The transfer function may be too complex for symbolic inversion.",
                 stage="TF7"
             )
 
-        status, payload = q.get()
+        # ---- 2. ดึงข้อมูลจาก Queue อย่างปลอดภัย (ป้องกันแอปค้าง) ----
+        try:
+            # ใช้ block=False เพื่อไม่ให้โปรแกรมหลักค้าง 
+            # ในกรณีที่ Process ลูกแครชกะทันหันก่อนส่งข้อมูลลง Queue
+            status, payload = q.get(block=False)
+        except:
+            # ถ้าดึงข้อมูลไม่ได้ แสดงว่า Worker process ตาย (เช่นโดนระบบ Kill เพราะ RAM พุ่ง)
+            raise SymbolicEngineError(
+                "Calculation process failed or was interrupted unexpectedly.",
+                stage="TF7"
+            )
 
+        # ---- 3. ตรวจสอบผลลัพธ์จาก Worker ----
         if status == "ok":
             return payload
         else:
             raise SymbolicEngineError(
-                "Inverse Laplace transform failed.\n"
-                f"Details: {payload}",
+                f"Inverse Laplace transform failed.\nDetails: {payload}",
                 stage="TF7"
             )
-
 
 
