@@ -202,16 +202,38 @@
     </select>
     <div style="margin-top:10px; padding-top:8px; border-top:1px dashed #bbb;">
         <label>Response Type</label>
-        <select name="response_type">
-            <option value="impulse">Impulse Response</option>
-            <option value="step">Step Response</option>
+                <select name="response_type">
+            <option value="impulse" {% if request.POST.response_type == "impulse" %}selected{% endif %}>
+                Impulse Response
+            </option>
+            <option value="step" {% if request.POST.response_type == "step" %}selected{% endif %}>
+                Step Response
+            </option>
         </select>
-
         <label style="margin-top:6px;">Solution Type</label>
-        <select name="solution_type">
-            <option value="symbolic">Symbolic Solution</option>
-            <option value="numeric">Numerical Solution</option>
+        <select id="solution_type" name="solution_type" onchange="toggleNumericalUI()">
+            <option value="symbolic" {% if request.POST.solution_type == "symbolic" %}selected{% endif %}>
+                Symbolic Solution
+            </option>
+            <option value="numeric" {% if request.POST.solution_type == "numeric" %}selected{% endif %}>
+                Numerical Solution
+            </option>
         </select>
+    
+        <div id="numerical_settings" style="display:none; margin-top:10px; padding:10px; border:1px solid #ccc; background:#f9f9f9;">
+            <label style="margin-top:0; display: flex; align-items: center; gap: 8px;">
+                Auto Time Scale
+                <input type="checkbox" id="auto_scale" name="auto_scale" 
+                    {% if request.POST.auto_scale == "on" or not request.method == "POST" %}checked{% endif %} 
+                    onchange="toggleDurationInput()" style="width: auto; margin-top: 0;">
+            </label>
+    
+            <div id="duration_div" style="display:none; margin-top:8px;">
+                <label>Duration (sec):</label>
+                <input type="number" id="t_end" name="t_end" 
+                    value="{{ request.POST.t_end|default:10 }}" step="0.1" class="small-number">
+            </div>
+        </div>
     </div>
 
 </div>
@@ -261,17 +283,25 @@
 </pre>
 {% endif %}
 
+{% if latex_equations %}
+<h3>System of Equations</h3>
+<div class="latex-box">
+{% for eq in latex_equations %}
+$$ {{ eq }} $$
+{% endfor %}
+</div>
+{% endif %}
 
-{% if latex_algebraic_tf %}
+{% if latex_tf_structural %}
 <hr>
-<h3>Algebraic System Operator (Non-minimal)</h3>
-
-<div class="result-box algebraic-box">
+<h3>{{ tf_structural_title|default:"Symbolic Overall Transfer Function" }}</h3>
+<div class="latex-box">
     \[
-        {{ latex_algebraic_tf|safe }}
+        {{ latex_tf_structural|safe }}
     \]
 </div>
 {% endif %}
+
 
 {% if latex_tf_used %}
 <h3>Transfer Function Used for ℒ⁻¹</h3>
@@ -297,19 +327,23 @@
 <pre>{{ error }}</pre>
 {% endif %}
 
-{% if latex_equations %}
-<h3>System of Equations</h3>
-<div class="latex-box">
-{% for eq in latex_equations %}
-$$ {{ eq }} $$
-{% endfor %}
+{% if show_algebraic_tf and latex_algebraic_tf %}
+<hr>
+<h3>Algebraic System Operator (Non-minimal, reference only)</h3>
+<div class="result-box algebraic-box">
+    \[
+        {{ latex_algebraic_tf|safe }}
+    \]
 </div>
 {% endif %}
 
 {% if latex_tf %}
-<h3>Overall Transfer Function</h3>
+<hr>
+<h3>{{ tf_display_title|default:"Overall Transfer Function" }}</h3>
 <div class="latex-box">
-$$ {{ latex_tf }} $$
+    \[
+        {{ latex_tf|safe }}
+    \]
 </div>
 {% endif %}
 
@@ -345,6 +379,54 @@ $$ {{ latex_tf }} $$
     {% endif %}
 </div>
 <!-- ===== END Time Response ===== -->
+<div id="numerical_graph_container" style="display:none; background:#fff; border:1px solid #bbb; margin-top:10px; padding:15px;">
+    <h3 style="margin-top:0;">Numerical Response Chart</h3>
+    <div style="height: 380px; position: relative;">
+        <canvas id="responseChart"></canvas>
+    </div>
+    <p id="auto_scale_info" style="font-size:12px; color:#666; margin-top:8px; font-style: italic;"></p>
+</div>
+{% if step_metrics %}
+<div class="result-box" style="margin-top:10px;">
+    <h3 style="margin-top:0;">Step Response Metrics</h3>
+    <table style="width:100%; border-collapse:collapse;">
+        <tr>
+            <td style="padding:6px; border-bottom:1px solid #ddd;"><strong>Final Value</strong></td>
+            <td style="padding:6px; border-bottom:1px solid #ddd;">
+                {% if step_metrics.final_value is not None %}{{ step_metrics.final_value|floatformat:4 }}{% else %}N/A{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:6px; border-bottom:1px solid #ddd;"><strong>Peak Value</strong></td>
+            <td style="padding:6px; border-bottom:1px solid #ddd;">
+                {% if step_metrics.peak_value is not None %}{{ step_metrics.peak_value|floatformat:4 }}{% else %}N/A{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:6px; border-bottom:1px solid #ddd;"><strong>Overshoot (%)</strong></td>
+            <td style="padding:6px; border-bottom:1px solid #ddd;">
+                {% if step_metrics.overshoot_percent is not None %}{{ step_metrics.overshoot_percent|floatformat:4 }}{% else %}N/A{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:6px; border-bottom:1px solid #ddd;"><strong>Rise Time (10%–90%)</strong></td>
+            <td style="padding:6px; border-bottom:1px solid #ddd;">
+                {% if step_metrics.rise_time is not None %}{{ step_metrics.rise_time|floatformat:4 }} s{% else %}N/A{% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:6px;"><strong>Settling Time (±{{ step_metrics.settling_band_percent|floatformat:1 }}%)</strong></td>
+            <td style="padding:6px;">
+                {% if step_metrics.settling_time is not None %}{{ step_metrics.settling_time|floatformat:4 }} s{% else %}N/A{% endif %}
+            </td>
+        </tr>
+    </table>
+</div>
+{% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+
 
 </div>
 
@@ -433,6 +515,77 @@ function checkConsistencyBeforeTF() {
 });
 
 window.addEventListener("load", updateAll);
+let myChart = null; // ตัวแปรสำหรับเก็บออบเจกต์กราฟ
+
+// ฟังก์ชันควบคุมการซ่อน/แสดงเมนู Numerical
+function toggleNumericalUI() {
+    const solType = document.getElementById("solution_type").value;
+    const settings = document.getElementById("numerical_settings");
+    // แสดงกล่องตั้งค่าเมื่อเลือก numeric เท่านั้น
+    settings.style.display = (solType === "numeric") ? "block" : "none";
+}
+
+// ฟังก์ชันควบคุมการซ่อน/แสดงช่องกรอกเวลา Duration
+function toggleDurationInput() {
+    const isAuto = document.getElementById("auto_scale").checked;
+    const durationDiv = document.getElementById("duration_div");
+    // แสดงช่องกรอกเวลาเฉพาะเมื่อไม่ได้ติ๊ก Auto
+    durationDiv.style.display = isAuto ? "none" : "block";
+}
+
+// ฟังก์ชันวาดกราฟ (รับค่าจาก Backend)
+function renderNumericalChart(tData, yData, labelText, tUsed) {
+    const container = document.getElementById("numerical_graph_container");
+    container.style.display = "block"; // แสดงกล่องกราฟ
+    
+    const ctx = document.getElementById('responseChart').getContext('2d');
+    if (myChart) { myChart.destroy(); } // ลบกราฟเก่าถ้ามี
+
+    myChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: tData.map(v => v.toFixed(3)),
+            datasets: [{
+                label: labelText,
+                data: yData,
+                borderColor: '#2563eb',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: false,
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { title: { display: true, text: 'Time (s)' } },
+                y: { title: { display: true, text: 'Amplitude' } }
+            }
+        }
+    });
+
+    if (tUsed) {
+        document.getElementById("auto_scale_info").innerText = `* Auto-scaled to ${tUsed.toFixed(2)} seconds.`;
+    }
+}
+
+// เพิ่ม Event Listener ให้ฟังก์ชันทำงานทันทีเมื่อหน้าเว็บโหลดเสร็จ
+window.addEventListener("load", () => {
+    toggleNumericalUI();
+    toggleDurationInput();
+
+    // ดึงข้อมูลจาก Django (ถ้ามี)
+    {% if numerical_data %}
+        renderNumericalChart(
+            {{ numerical_data.t|safe }}, 
+            {{ numerical_data.y|safe }}, 
+            "{{ numerical_data.label }}", 
+            {{ numerical_data.t_used }}
+        );
+    {% endif %}
+});
+
 </script>
 
 </body>
