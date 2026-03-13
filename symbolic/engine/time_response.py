@@ -101,7 +101,7 @@ class TimeResponseEngine:
         if Gs is None:
             raise SymbolicEngineError(
                 "Transfer function G(s) is None",
-                stage="TF7"
+                stage="time response engine"
             )
 
         # ----------------------------------------------
@@ -116,7 +116,7 @@ class TimeResponseEngine:
         else:
             raise SymbolicEngineError(
                 f"Unsupported response type: {response_type}",
-                stage="TF7"
+                stage="time response engine"
             )
 
         # ----------------------------------------------
@@ -169,7 +169,7 @@ class TimeResponseEngine:
                 "Inverse Laplace transform failed.\n"
                 "The transfer function may be too complex for symbolic inversion.\n"
                 f"Details: {e}",
-                stage="TF7"
+                stage="time response engine"
         )
 
     def _inverse_laplace_with_timeout(self, Ys, timeout=3.0):
@@ -193,8 +193,9 @@ class TimeResponseEngine:
             p.join()       # รอให้คืนทรัพยากร (RAM 8GB) กลับสู่ระบบ
             raise SymbolicEngineError(
                 "Inverse Laplace transform timed out.\n"
-                "The transfer function may be too complex for symbolic inversion.",
-                stage="TF7"
+                "The transfer function appears too complex for symbolic inversion. " \
+                "Please use the numerical solution instead.",
+                stage="time response engine"
             )
 
         # ---- 2. ดึงข้อมูลจาก Queue อย่างปลอดภัย (ป้องกันแอปค้าง) ----
@@ -206,7 +207,7 @@ class TimeResponseEngine:
             # ถ้าดึงข้อมูลไม่ได้ แสดงว่า Worker process ตาย (เช่นโดนระบบ Kill เพราะ RAM พุ่ง)
             raise SymbolicEngineError(
                 "Calculation process failed or was interrupted unexpectedly.",
-                stage="TF7"
+                stage="time response engine"
             )
 
         # ---- 3. ตรวจสอบผลลัพธ์จาก Worker ----
@@ -215,7 +216,7 @@ class TimeResponseEngine:
         else:
             raise SymbolicEngineError(
                 f"Inverse Laplace transform failed.\nDetails: {payload}",
-                stage="TF7"
+                stage="time response engine"
             )
 
 
