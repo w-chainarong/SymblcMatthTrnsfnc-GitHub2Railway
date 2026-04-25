@@ -365,8 +365,40 @@ def runtime_gui(request):
                     # --------------------------------------------------
                     num_eng = NumericalEngine(s)
                     t_limit = 0 if is_auto_scale else t_end_val
-                    res = num_eng.solve_response(Gs, response_type=response_type, t_end=t_limit)
+                    #res = num_eng.solve_response(Gs, response_type=response_type, t_end=t_limit)
+                    try:
+                        res = num_eng.solve_response(Gs, response_type=response_type, t_end=t_limit)
 
+                    except ValueError as e:
+                        error_msg = str(e)
+
+                        if "Response data contains NaN or Inf" in error_msg:
+                            context["warning"] = (
+                                "Numerical response could not be generated safely.\n"
+                                "The response data contains NaN or Inf. This may occur when "
+                                "the response grows too rapidly or the selected simulation "
+                                "duration is too long.\n\n"
+                                "Suggestion: please try a shorter duration, such as 0.1–0.5 seconds, "
+                                "or use the symbolic response instead.\n\n"
+                                f"Details: {error_msg}"
+                            )
+
+                            context["latex_time_response"] = (
+                                r"\text{Numerical response could not be generated safely.}"
+                            )
+
+                            context["result"] = (
+                                f"Response: {response_type}\n"
+                                f"Solution: Numerical\n"
+                                "Status: response data contains NaN or Inf"
+                            )
+
+                            context["numerical_data"] = None
+                            context["step_metrics"] = None
+
+                            return render(request, "symbolic/runtime_gui.html", context)
+
+                        raise
                     context["numerical_data"] = {
                         "t": res["t"].tolist(),
                         "y": res["y"].tolist(),

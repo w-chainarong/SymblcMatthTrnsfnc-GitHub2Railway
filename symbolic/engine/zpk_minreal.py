@@ -95,7 +95,7 @@ class ZPKMinrealEngine:
     # STEP 2: minreal (numeric cancellation)
     # --------------------------------------------------
 
-    def minreal(self, tol: float = 1e-3):
+    def minreal(self, tol: float = 1e-6):
         """
         Numeric pole-zero cancellation (MATLAB-like)
         """

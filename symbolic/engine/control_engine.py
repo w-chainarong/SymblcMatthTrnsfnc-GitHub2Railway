@@ -1,8 +1,10 @@
-from sympy import symbols, Eq, solve, simplify, latex, Symbol
+from sympy import symbols, Eq, simplify, latex, Symbol
 from sympy.parsing.sympy_parser import parse_expr
 from sympy.core.sympify import SympifyError
 from sympy import expand
 from sympy import cancel, factor, fraction, LC
+from sympy.solvers.solveset import linsolve
+from sympy import linear_eq_to_matrix
 
 import re
 from sympy import together, fraction
@@ -206,24 +208,47 @@ class SymbolicControlEngine:
     # --------------------------------------------------
 
     def compute_symbolic_transfer_function(self):
+        """
+        Solve the induced symbolic system S using Gauss-Jordan elimination
+        (via sympy.linsolve), consistent with the topology-guided symbolic
+        elimination framework described in the methodology.
+
+        The system S = {F_i = 0} is linear in the signal variables x,
+        with coefficients that are symbolic expressions in s and the
+        gain symbols G_i, H_j. The matrix form A*x = b is constructed
+        via linear_eq_to_matrix, and linsolve applies Gauss-Jordan
+        elimination to obtain the unique solution for all signal variables.
+        The overall transfer function is then extracted as T(s) = x_n / R.
+        """
         try:
-            solution = solve(self.equations, self.x)
+            # Build matrix form A*x = b from F_i = lhs - rhs = 0
+            exprs = [eq.lhs - eq.rhs for eq in self.equations]
+            A, b = linear_eq_to_matrix(exprs, list(self.x))
+
+            # Solve via Gauss-Jordan elimination
+            solution_set = linsolve((A, b), list(self.x))
+
         except Exception as e:
             raise SymbolicEngineError(
                 f"Failed to solve symbolic system: {e}",
                 stage="solve"
             )
 
-        if len(solution) != self.num_vars:
+        if not solution_set:
             raise SymbolicEngineError(
                 "Symbolic system has no unique solution",
                 stage="solve"
             )
 
         try:
+            # Extract solution as dict {x_i: expr}
+            sol_tuple = list(solution_set)[0]
+            solution = dict(zip(self.x, sol_tuple))
+
             Y = solution[self.x[-1]]
             self.algebraic_tf = Y / self.R
             self.symbolic_tf = simplify(Y / self.R)
+
         except Exception as e:
             raise SymbolicEngineError(
                 f"Failed to compute symbolic transfer function: {e}",
@@ -450,8 +475,6 @@ class BlockDiagramEngine:
                 src_node = "R" if src_name == "R" else (takeoff_nodes.get(src_name) or final_source.get(src_name) or sum_nodes.get(src_name))
                 actual_target = target_junction if target_junction else "Y"
 
-                # กำหนด label: ถ้าเข้า Summing block และเป็นตัวแปร x_i ให้เตรียมที่ว่างไว้เติมชื่อ
-                # แต่ถ้าเป็น R ให้ใส่แค่เครื่องหมาย
                 edge_label = large_sign if actual_target.startswith("S") else None
                 
                 if pure_gain == "1":
@@ -477,23 +500,18 @@ class BlockDiagramEngine:
             target_tid = takeoff_nodes.get(xi)
             source_node = final_source.get(xi)
             
-            # ค้นหาเส้นที่ออกจากต้นกำเนิดของ xi เพื่อติดป้ายชื่อ
             for e in graph["edges"]:
                 if e["from"] == source_node:
                     current_label = e.get("label")
-                    # ถ้าเส้นนี้วิ่งไปที่ Summing block ให้เอาชื่อ xi ไปแปะหน้าเครื่องหมาย
                     if e["to"].startswith("S"):
                         if current_label and "FONT" in current_label:
                             e["label"] = f"{xi} {current_label}"
                         else:
                             e["label"] = xi
-                    # ถ้ายังไม่มี label ให้ใส่ชื่อ xi เข้าไปเลย
                     elif current_label is None:
                         e["label"] = xi
                     
-                    # ถ้าไม่ใช่ Take-off เราจะติดป้ายแค่เส้นเดียวที่ออกจากแหล่งกำเนิด
                     if not target_tid: break 
-                    # ถ้ามี Take-off เราจะติดป้ายเฉพาะเส้นที่วิ่งไปหาจุด Take-off เท่านั้น
                     if e["to"] == target_tid: break
 
         # 6) Final Output Connection
@@ -506,7 +524,6 @@ class BlockDiagramEngine:
 
     
 def block_graph_to_mermaid(graph):
-    # เปลี่ยนเป็น LR เพื่อให้อ่านง่ายขึ้นในรูปแบบ Control System
     lines = ["flowchart LR"]
 
     # ---------- Nodes ----------
@@ -543,5 +560,3 @@ def block_graph_to_mermaid(graph):
     ]
 
     return "\n".join(lines)
-
-
